@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Tarama Raporu</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <header>
+    <div class="container">
+      <div>
+        <h1>📋 Tarama Raporu</h1>
+        <div class="subtitle" id="reportSubtitle">Yükleniyor...</div>
+      </div>
+      <div style="margin-left:auto;display:flex;gap:8px">
+        <button class="btn btn-ghost btn-sm" onclick="downloadReport()">⬇ JSON İndir</button>
+        <a href="/" class="btn btn-ghost btn-sm">← Ana Sayfa</a>
+      </div>
+    </div>
+  </header>
+
+  <main>
+    <div class="container">
+
+      <!-- Özet -->
+      <div class="card" id="summaryCard" style="display:none">
+        <h2>Özet</h2>
+        <div class="summary-row" id="summaryRow"></div>
+        <div id="scanMeta" style="font-size:12px;color:var(--color-muted)"></div>
+      </div>
+
+      <!-- Filtre -->
+      <div class="card">
+        <div class="filter-bar">
+          <input type="text" id="searchInput" placeholder="Arama..." oninput="applyFilters()" style="max-width:200px" />
+          <select id="severityFilter" onchange="applyFilters()">
+            <option value="">Tüm Önem Seviyeleri</option>
+            <option>Kritik</option>
+            <option>Yüksek</option>
+            <option>Orta</option>
+            <option>Düşük</option>
+            <option>Bilgilendirici</option>
+          </select>
+          <div style="display:flex;gap:4px;flex-wrap:wrap" id="owaspFilter"></div>
+          <button class="btn btn-ghost btn-sm" onclick="clearFilters()">Filtreleri Temizle</button>
+        </div>
+
+        <div class="finding-list" id="reportFindingList">
+          <div class="empty">Rapor yükleniyor...</div>
+        </div>
+      </div>
+
+    </div>
+  </main>
+
+  <script src="/static/app.js"></script>
+  <script>
+    let reportData = null;
+    let activeOwaspFilter = null;
+
+    async function loadReport() {
+      const scanId = location.pathname.split('/').pop();
+      try {
+        const res = await fetch(`/api/scan/${scanId}/report`);
+        if (!res.ok) {
+          document.getElementById('reportFindingList').innerHTML =
+            '<div class="empty">Rapor bulunamadı veya tarama henüz tamamlanmadı.</div>';
+          return;
+        }
+        reportData = await res.json();
+        renderReport(reportData);
+      } catch (e) {
+        document.getElementById('reportFindingList').innerHTML =
+          `<div class="empty">Hata: ${e.message}</div>`;
+      }
+    }
+
+    function renderReport(data) {
+      const info = data.scan_info || {};
+      const summary = data.summary || {};
+      const findings = data.findings || [];
+
+      document.getElementById('reportSubtitle').textContent =
+        `${info.target || ''} · ${findings.length} bulgu · ${info.duration_seconds || 0}s`;
+      document.title = `Rapor — ${info.target || ''}`;
+
+      // Özet kartı
+      const breakdown = summary.severity_breakdown || {};
+      const severities = ['Kritik', 'Yüksek', 'Orta', 'Düşük', 'Bilgilendirici'];
+      document.getElementById('summaryRow').innerHTML = [
+        `<div class="summary-stat"><div class="num">${summary.total_findings || 0}</div><div class="lbl">Toplam</div></div>`,
+        ...severities.map(s => {
+          const n = breakdown[s] || 0;
+          return n > 0
+            ? `<div class="summary-stat"><div class="num" style="color:var(--color-${severityVar(s)})">${n}</div><div class="lbl">${s}</div></div>`
+            : '';
+        })
+      ].join('');
+
+      const llmLabel = info.llm_enabled
+        ? (info.llm_models && info.llm_models.length
+            ? info.llm_models.join(', ')
+            : (info.llm_model || 'aktif'))
+        : 'Kapalı';
+      const ragLabel = info.rag_enabled
+        ? `Açık${info.rag_stats && info.rag_stats.chunk_count ? ' (' + info.rag_stats.chunk_count + ' chunk)' : ''}`
+        : 'Kapalı';
+      document.getElementById('scanMeta').innerHTML =
+        `Tarama zamanı: ${info.timestamp || '—'} &nbsp;|&nbsp; Modüller: ${(info.modules_run || []).join(', ')} &nbsp;|&nbsp; LLM: ${llmLabel} &nbsp;|&nbsp; RAG: ${ragLabel}`;
+
+      document.getElementById('summaryCard').style.display = 'block';
+
+      // OWASP filtre butonları
+      const owaspIds = [...new Set(findings.map(f => f.owasp_id))].sort();
+      document.getElementById('owaspFilter').innerHTML = owaspIds.map(id =>
+        `<button class="target-btn" id="owaspBtn-${id}" onclick="toggleOwaspFilter('${id}')">${id}</button>`
+      ).join('');
+
+      renderFindingList(findings);
+    }
+
+    function renderFindingList(findings) {
+      const list = document.getElementById('reportFindingList');
+      if (!findings.length) {
+        list.innerHTML = '<div class="empty">Bu filtreyle eşleşen bulgu yok.</div>';
+        return;
+      }
+      list.innerHTML = '';
+      findings.forEach((f, i) => list.appendChild(buildFindingCard(f, i)));
+    }
+
+    function applyFilters() {
+      if (!reportData) return;
+      const search = document.getElementById('searchInput').value.toLowerCase();
+      const sev = document.getElementById('severityFilter').value;
+      let findings = reportData.findings || [];
+
+      if (activeOwaspFilter) findings = findings.filter(f => f.owasp_id === activeOwaspFilter);
+      if (sev) findings = findings.filter(f => f.severity === sev);
+      if (search) findings = findings.filter(f =>
+        (f.title + f.url + f.parameter + f.payload).toLowerCase().includes(search)
+      );
+      renderFindingList(findings);
+    }
+
+    function toggleOwaspFilter(id) {
+      activeOwaspFilter = activeOwaspFilter === id ? null : id;
+      document.querySelectorAll('[id^="owaspBtn-"]').forEach(btn => {
+        const active = btn.id === `owaspBtn-${activeOwaspFilter}`;
+        btn.style.borderColor = active ? 'var(--color-accent)' : '';
+        btn.style.background  = active ? 'rgba(79,142,247,.12)' : '';
+      });
+      applyFilters();
+    }
+
+    function clearFilters() {
+      document.getElementById('searchInput').value = '';
+      document.getElementById('severityFilter').value = '';
+      activeOwaspFilter = null;
+      document.querySelectorAll('[id^="owaspBtn-"]').forEach(btn => {
+        btn.style.borderColor = '';
+        btn.style.background  = '';
+      });
+      applyFilters();
+    }
+
+    function downloadReport() {
+      if (!reportData) return;
+      const blob = new Blob([JSON.stringify(reportData, null, 2)], { type: 'application/json' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      const scanId = location.pathname.split('/').pop();
+      a.download = `rapor_${scanId}.json`;
+      a.click();
+    }
+
+    function severityVar(s) {
+      return { Kritik: 'kritik', Yüksek: 'yuksek', Orta: 'orta', Düşük: 'dusuk' }[s] || 'info';
+    }
+
+    loadReport();
+  </script>
+</body>
+</html>

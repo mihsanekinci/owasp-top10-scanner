@@ -1,0 +1,35 @@
+# Test ortamı overlay — savunmasız uygulamalar
+# Kullanım: docker compose -f docker-compose.yml -f docker-compose.test.yml up
+#
+# Bu dosya docker-compose.yml üzerine eklenir.
+# Scanner container'ı bu servislere internal network üzerinden ulaşır:
+#   DVWA       → http://dvwa/
+#   Juice Shop → http://juice-shop:3000/
+#   WebGoat    → http://webgoat:8080/WebGoat/
+
+services:
+  dvwa:
+    image: vulnerables/web-dvwa
+    environment:
+      - MYSQL_PASS=dvwa
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost/login.php"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    networks:
+      - internal
+    restart: unless-stopped
+
+  juice-shop:
+    image: bkimminich/juice-shop
+    networks:
+      - internal
+    restart: unless-stopped
+
+  webgoat:
+    image: webgoat/webgoat
+    networks:
+      - internal
+    restart: unless-stopped

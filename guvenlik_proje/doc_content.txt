@@ -1,0 +1,224 @@
+﻿1. Giriş
+1.1 Amaç
+Bu döküman, AI Destekli Web Zafiyet Tarayıcısı (OWASP Top 10) projesinin yazılım gereksinimlerini tanımlar. Proje, OWASP Top 10 listesindeki güvenlik açıklarını tespit etmek için modüler bir tarayıcı geliştirmeyi, her tespit için yerel bir LLM (Ollama) kullanarak risk analizi ve çözüm önerileri üretmeyi amaçlar.
+1.2 Kapsam
+Hedef web uygulaması (DVWA / Juice Shop) üzerinde çalışacak.
+Sadece local veya yetkili test ortamlarında kullanılacak.
+10 OWASP modülünün tamamı hedeflenecek; bazı modüller sınırlı implemente edilebilir (fakat raporda belirtilecek).
+LLM entegrasyonu sadece tespit sonrası doğrulama ve iyileştirme önerisi için kullanılacak; tespitin kendisi statik analizle yapılacak.
+1.3 Referanslar
+OWASP Top 10 (2021) – https://owasp.org/Top10/
+Ollama API dokümantasyonu
+DVWA kurulum kılavuzu
+2. Genel Sistem Mimarisi (Üst Düzey)
+3. Sistem Bileşenleri ve Detaylı Gereksinimler
+3.1 Ortak Modüller (/core)
+3.1.1 Web Crawler (crawler.py)
+Girdi: Başlangıç URL’si, derinlik (default=2)Çıktılar:
+Tüm sayfaların URL listesi
+Her sayfadaki formlar (method, action, input alanları isimleri)
+GET parametreleri (linklerden çıkarılan)
+Cookie’ler (ilk ziyaretten alınan)
+Yöntem: requests + BeautifulSoup, urllib.parseGereksinimler:
+Robot`ları takip etme (robots.txt kontrolü opsiyonel)
+Aynı domain ile sınırlı kal
+En fazla 50 sayfa ile sınırla (performans)
+3.1.2 HTTP İstek Yöneticisi (http_client.py)
+Session yönetimi (cookie’leri koru)
+Timeout (5 sn), retry (2 kez)
+User-Agent döndürme (maskeleme)
+Proxy desteği (opsiyonel)
+3.1.3 AI Sorgulayıcı (llm_client.py)
+Görevi: Bir bulgu sözlüğünü al, prompt’a çevir, Ollama’ya POST et, yanıtı parse et (JSON).Desteklenen modeller: Konfigürasyondan ayarlanabilir.Hata yönetimi: Ollama çalışmazsa, LLM yanıtı olmadığını raporda belirt.
+API Kullanımı:
+POST http://localhost:11434/api/generate
+{
+  "model": "llama3.2:3b",
+  "prompt": "...",
+  "stream": false,
+  "format": "json"  # Ollama'nın JSON modu varsa kullan
+}
+3.2 OWASP Modülleri (/modules/AXX/)
+Her modül aşağıdaki standart arayüzü uygular:
+__init__(self, target, http_client, shared_data)
+run() -> List[Finding]
+_test_payloads(url, param, payloads) -> List[Response]
+Finding (bulgu) veri yapısı (JSON şeması):
+{
+  "owasp_id": "A03",
+  "title": "SQL Injection",
+  "url": "http://localhost/vuln.php?id=1",
+  "parameter": "id",
+  "payload": "' OR '1'='1",
+  "response_snippet": "...",
+  "confidence": "High",
+  "raw_details": {}
+}
+3.2.1 Her OWASP Maddesi için Test Stratejisi + AI Prompt
+Aşağıda her modül için yapılacak minimal test ve LLM prompt girdisi verilmiştir. Bazı modüllerde test sadece konsept kanıtı olacaktır (ör. A04, A08).
+A01 – Broken Access Control
+Test: IDOR – Parametredeki id değerini +1/-1 yap, farklı kullanıcı oturumu yoksa sadece mantıksal kontrol (aynı kullanıcı kendi idsini değiştirirse başka kayda erişiyor mu?). DVWA'da bu zayıf.
+AI Prompt: "Bu endpoint {url} parametresi {param} değeri {payload} ile farklı bir kaynağa erişti. Yanıt içeriği başka bir kullanıcının verisi olabilir mi? IDOR zafiyeti var mı? Kısaca açıkla ve risk seviyesi ver."
+A02 – Cryptographic Failures
+Test: SSL sertifikası kontrolü (zayıf cipher), response içinde credit card pattern’i (regex: \b\d{4}[-]?\d{4}[-]?\d{4}[-]?\d{4}\b), password field’ında plaintext gönderimi.
+AI Prompt: "Taranan sayfada {bulgu_tipi} tespit edildi: {ayrıntı}. Bu kriptografik zafiyetin riski nedir? Düzeltme için hangi başlıklar/şifreleme önerilir?"
+A03 – Injection (SQLi, XSS)
+Test: SQLi – ' OR '1'='1 ve ' SLEEP(5) (zaman bazlı); XSS – <script>alert(1)</script> ve event handler’lar.
+AI Prompt: "Aşağıdaki payload sonucu sunucu şu yanıtı verdi: {response_snippet}. Bu bir SQL/XSS enjeksiyonu olduğunu gösterir mi? Açıklayıp önlem öner."
+A04 – Insecure Design
+Test: Rate limit – Aynı endpoint’e 30 istek/saniye gönder, hız sınırlaması yoksa raporla. İş mantığı testi yapılmayacak (sadece kavramsal).
+AI Prompt: "Uygulama {url} adresinde rate limit uygulamıyor. Bu neden insecure design sayılır mı? Olası etkileri nelerdir?"
+A05 – Security Misconfiguration
+Test: Header kontrolü (Missing X-Frame-Options, HSTS, Content-Security-Policy). Debug modu (hata sayfasında stack trace). Directory listing (/.git/ ).
+AI Prompt: "Şu güvenlik başlıkları eksik: {liste}. Ayrıca hata mesajında {hata_örneği} görüldü. Risk değerlendirmesi yap."
+A06 – Vulnerable Components
+Test: Server header’ı, X-Powered-By, JS dosyası versiyon bilgisi (örn. jquery-3.5.1.min.js). Basit bir CVE eşleme (sözlük) yap.
+AI Prompt: "Tespit edilen bileşen: {component} versiyon {version}. Bilinen güvenlik açıkları var mı? Kısaca özetle."
+A07 – Identification and Auth Failures
+Test: Cookie’de sessionid tahmin edilebilir mi? (sabit veya artan sayı). Brute force testi yapılmayacak.
+AI Prompt: "Session token örneği: {token}. Bu token rastgele mi? Zafiyet oluşturur mu? Öneri."
+A08 – Software and Data Integrity Failures
+Test: Sadece deserialization farkındalığı – Parametrede pickle data gönderme yapılmayacak, statik olarak bu zafiyetin varlığını sorgulat.
+AI Prompt: "Bu uygulama serialize veri işliyor olabilir. Hangi güvenlik kontrolleri yapılmalı? (kısa)"
+A09 – Security Logging and Monitoring Failures
+Test: Tarayıcının kendisi log tutar; hedef uygulamada loglama yoksa anlaşılmaz. Bu modülde sadece “loglama stratejiniz nedir?” sorusuna AI cevap versin.
+AI Prompt: "Web uygulaması güvenlik olaylarını loglamıyor gibi görünüyor. Olası sonuçları ve çözüm önerileri nelerdir?"
+A10 – SSRF
+Test: URL parametrelerinde http://127.0.0.1:80/admin ve file:///etc/passwd gönder, callback sunucusu kurmadan hata mesajı analizi yap.
+AI Prompt: "{payload} ile yapılan istek internal bir kaynağa erişmeye çalıştı. Yanıt: {snippet}. SSRF zafiyeti var mı? Nasıl önlenir?"
+3.3 Raporlama Modülü (reporter.py)
+Girdi: Tüm modüllerin Finding listesi + her bir bulgu için LLM cevabı (JSON olarak)Çıktı:
+report.html (tablo ve ayrıntılar, stil CSS)
+report.json (ham veri)
+Rapor İçeriği:
+Özet: Toplam bulgu sayısı, risk dağılımı (Kritik/Yüksek/Orta/Düşük), taranan URL sayısı
+Her bulgu için:
+OWASP ID, URL, parametre
+Payload ve kanıt (response snippet)
+LLM’nin ürettiği risk seviyesi, teknik açıklama, düzeltme önerileri
+Olası false positive durumunda “LLM düşük güven” notu
+Oluşturma adımları:
+findings listesini topla.
+Her finding için llm_client.query() çağır (asenkron veya sırayla).
+LLM yanıtını finding içine ekle.
+Jinja2 template’e verileri geçir, HTML dosyasını yaz.
+JSON backup oluştur.
+4. Teknoloji Seçimleri (Kesin)
+Bileşen
+Seçim
+Gerekçe
+Dil
+Python 3.10
+Zengin kütüphane, hızlı prototip
+HTTP
+requests
+Basit, yaygın
+HTML Ayrıştırma
+BeautifulSoup4
+Esnek, hata toleranslı
+LLM
+Ollama + llama3.2:3b
+Yerel, ücretsiz, kolay API
+Raporlama
+Jinja2 + HTML/CSS
+Şablon tabanlı, kolay
+Test Ortamı
+DVWA Docker
+Hızlı kurulum, güvenli
+Versiyon Kontrol
+Git
+Standart
+Komut Satırı Arayüzü
+argparse
+CLI tercih edildi (Flask opsiyonel)
+5. Veri Akışı (Adım Adım Örnek – SQLi modülü)
+Kullanıcı main.py --target http://localhost/dvwa çalıştırır.
+Ana orkestratör:
+Crawler çalıştır → /vulnerabilities/sqli/ sayfasını bulur, parametre id'yi alır.
+Payload listesini yükler: ['1', "' OR '1'='1", "1 AND SLEEP(5)"].
+A03 modülü her payload için istek atar, yanıtları toplar.
+Statik analiz: response.text içinde "You have an error in your SQL syntax" varsa bulgu oluştur.
+Bulgu sözlüğü oluştur: {... , "payload": "' OR '1'='1", "response_snippet": "..."}
+LLM sorgulayıcıya gönderilir.
+LLM döner: {"risk_seviyesi": "Yüksek", "teknik_aciklama": "...", "kod_duzeltme": "...", "genel_onlemler": [...]}
+Bu veri all_findings listesine eklenir.
+Tüm modüller bitince, rapor oluşturulur.
+6. Kullanıcı Arayüzü (CLI Öncelikli)
+Komut satırından çalıştırma örneği:
+bash
+python main.py -u http://localhost/dvwa -o rapor.html --modules A03,A05,A10 --llm-model llama3.2:3b
+Argumentler:
+-u, --url : Hedef URL
+-o, --output : Rapor dosya adı
+--modules : Hangi modüller (hepsi için all)
+--llm-model : Ollama model adı
+--no-llm : LLM sorgusunu kapat (sadece statik)
+7. Kısıtlar ve Varsayımlar
+Test ortamı DVWA olduğu için tüm OWASP maddeleri gerçekçi test edilemez; bazı modüller varsayımsal çıktı üretebilir.
+LLM yanıtları her zaman doğru olmayabilir; projede bu, “AI katkısının değerlendirilmesi” başlığında irdelenecektir.
+Performans: 10 modül + her biri için LLM sorgusu (ortalama 3 bulgu) → en fazla 30 LLM çağrısı, süre ~2-3 dakika.
+Ollama’nın çalıştığı bilgisayarda en az 4 GB boş RAM olmalı.
+8. Genişletmeler ve Değerlendirme Metodolojisi
+8.1 Flask Tabanlı Arayüz Entegrasyonu
+Bu projede başlangıçta komut satırı arayüzü (CLI) tercih edilmiştir. Ancak proje gereksinimlerinde belirtilen teknolojiler doğrultusunda sisteme ek olarak bir Flask tabanlı web arayüzü entegre edilmiştir.
+Bu arayüz üzerinden:
+Hedef URL girilebilmekte, 
+Çalıştırılacak OWASP modülleri seçilebilmekte, 
+Tarama süreci başlatılabilmekte, 
+Oluşturulan zafiyet raporları web arayüzünde görüntülenebilmektedir. 
+Ayrıca Flask katmanı, tarayıcı motoru ile REST API üzerinden haberleşecek şekilde tasarlanmıştır. Bu sayede sistem hem CLI hem de web tabanlı kullanım senaryolarını desteklemektedir.
+8.2 Deneysel Değerlendirme Metodolojisi
+Geliştirilen zafiyet tarayıcısının başarımını ölçmek amacıyla kontrollü bir test ortamı oluşturulmuştur. Testler Damn Vulnerable Web Application üzerinde gerçekleştirilmiştir.
+Değerlendirme sürecinde aşağıdaki metrikler kullanılmıştır:
+True Positive (TP): Gerçek zafiyet olup doğru tespit edilenler 
+False Positive (FP): Zafiyet olmadığı halde varmış gibi raporlananlar 
+False Negative (FN): Zafiyet olduğu halde tespit edilemeyenler 
+Bu metrikler kullanılarak aşağıdaki ölçümler yapılmıştır:
+Doğruluk (Accuracy) 
+Precision (TP / (TP + FP)) 
+Recall (TP / (TP + FN)) 
+Her OWASP modülü için ayrı ayrı testler gerçekleştirilmiş ve sonuçlar raporlanmıştır.
+8.3 Mevcut Araçlarla Karşılaştırma
+Geliştirilen sistemin performansı, sektörde yaygın olarak kullanılan araçlarla karşılaştırılmıştır:
+OWASP ZAP 
+Nikto 
+Burp Suite 
+Karşılaştırma kriterleri:
+Tespit edilen zafiyet sayısı 
+False positive oranı 
+Tarama süresi 
+Kullanılabilirlik 
+Elde edilen sonuçlar, geliştirilen aracın özellikle temel zafiyetlerde başarılı olduğunu, ancak gelişmiş analizlerde profesyonel araçlara kıyasla sınırlı kaldığını göstermektedir.
+8.4 AI Katkısının Analizi
+Projede LLM kullanımı doğrudan zafiyet tespiti için değil, tespit sonrası analiz için kullanılmıştır. AI’nın katkısı aşağıdaki kriterler üzerinden değerlendirilmiştir:
+Zafiyet açıklamalarının doğruluğu 
+Risk seviyesinin tutarlılığı 
+Önerilen çözüm yollarının uygulanabilirliği 
+Ayrıca LLM kullanımı ile:
+False positive durumlarında daha düşük risk değerlendirmesi yapılabildiği, 
+Zafiyetlerin daha anlaşılır şekilde raporlandığı gözlemlenmiştir. 
+Ancak bazı durumlarda modelin hatalı veya genelleyici yorumlar yaptığı da tespit edilmiştir. Bu nedenle LLM çıktıları nihai karar mekanizması olarak değil, destekleyici analiz olarak değerlendirilmelidir.
+8.5 OWASP Modüllerinin Sınırlamaları ve Genişletilmesi
+Proje kapsamında bazı OWASP modülleri tam otomatik test edilememiştir:
+A04 – Insecure Design 
+A08 – Software and Data Integrity Failures 
+A09 – Logging and Monitoring Failures 
+Bu modüller için:
+Kısmi testler uygulanmış, 
+Eksik kalan noktalar LLM analizi ile desteklenmiştir. 
+Gelecek çalışmalarda:
+Daha gelişmiş davranış analizi, 
+Dinamik test senaryoları, 
+Gerçek kullanıcı simülasyonu 
+gibi yöntemlerle bu modüllerin kapsamı genişletilebilir.
+8.6 Genel Değerlendirme
+Bu proje kapsamında geliştirilen sistem:
+OWASP Top 10’un temel zafiyetlerini tespit edebilen, 
+Modüler yapıya sahip, 
+LLM destekli analiz sunabilen 
+bir zafiyet tarayıcısı olarak başarılı bir prototip ortaya koymaktadır.
+Ancak:
+Gelişmiş zafiyet senaryoları, 
+Daha düşük false positive oranı, 
+Profesyonel araç seviyesinde kapsam 
+gibi alanlarda geliştirmeye açıktır.

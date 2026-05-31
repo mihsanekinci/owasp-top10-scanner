@@ -1,0 +1,16 @@
+# Tek seferde tüm bağımlılıklar:  pip install -r requirements.txt
+#
+# Bileşen başına ayrı kurulum hâlâ mümkündür:
+#   - Yalnız CLI tarayıcı:  pip install -r guvenlik_proje/requirements.txt
+#   - Yalnız web UI:        pip install -r web/requirements.txt
+
+# --- Çekirdek scanner (guvenlik_proje/) ---
+requests>=2.31.0
+beautifulsoup4>=4.12.0
+urllib3>=2.0.0
+chromadb>=0.5.0
+
+# --- Web UI (web/) ---
+fastapi>=0.111.0
+uvicorn[standard]>=0.29.0
+websockets>=12.0
