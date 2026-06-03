@@ -369,6 +369,8 @@ function handleEvent(evt, modules) {
         window._lastScanId = evt.report_id;
         // Bulgular zaten akış ile geldiyse yeniden render etme
         if (!liveFindings.length && evt.report.findings) renderFindings(evt.report.findings);
+        // Tarama sırasında kaydedilen verdict'leri kartlara uygula
+        if (evt.report.verdicts) applyVerdicts(evt.report.verdicts);
         showResultActions(evt.report_id);
       }
       loadHistory();
@@ -456,6 +458,25 @@ function markFinding(key, verdict) {
   saveFPLabels(labels);
   document.querySelectorAll('.finding-card').forEach(card => {
     if (card.dataset.fpKey === key) updateFPButtons(card, labels[key] || null);
+  });
+  // Backend'e kaydet
+  if (window._lastScanId) {
+    fetch(`/api/scan/${window._lastScanId}/verdict`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ key, verdict: labels[key] || null }),
+    }).catch(() => {});
+  }
+}
+
+function applyVerdicts(verdicts) {
+  if (!verdicts || !Object.keys(verdicts).length) return;
+  const labels = getFPLabels();
+  Object.assign(labels, verdicts);
+  saveFPLabels(labels);
+  document.querySelectorAll('.finding-card').forEach(card => {
+    const k = card.dataset.fpKey;
+    if (k && verdicts[k]) updateFPButtons(card, verdicts[k]);
   });
 }
 

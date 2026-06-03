@@ -38,10 +38,14 @@ class ScanRequest(BaseModel):
     no_llm: bool = False
     cookie: Optional[str] = None
     timeout: int = 5
-    # Yeni alanlar — çoklu LLM ve RAG
     llm_model: Optional[str] = None
     llm_models: Optional[List[str]] = None
     use_rag: bool = True
+
+
+class VerdictRequest(BaseModel):
+    key: str
+    verdict: Optional[str] = None  # "tp" | "fp" | null (sıfırlamak için)
 
 
 # ---------------------------------------------------------------------------
@@ -179,6 +183,22 @@ async def cancel_scan(scan_id: str):
     if not ok:
         raise HTTPException(status_code=404, detail="Tarama bulunamadı veya zaten tamamlandı.")
     return {"cancelled": True}
+
+
+@app.patch("/api/scan/{scan_id}/verdict")
+async def set_verdict(scan_id: str, req: VerdictRequest):
+    ok = scan_manager.save_verdict(scan_id, req.key, req.verdict)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Tarama bulunamadı.")
+    return {"ok": True}
+
+
+@app.get("/api/scan/{scan_id}/verdicts")
+async def get_verdicts(scan_id: str):
+    verdicts = scan_manager.get_verdicts(scan_id)
+    if verdicts is None:
+        raise HTTPException(status_code=404, detail="Tarama bulunamadı.")
+    return {"verdicts": verdicts}
 
 
 @app.get("/api/scan/{scan_id}/report")

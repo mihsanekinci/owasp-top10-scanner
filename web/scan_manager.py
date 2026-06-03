@@ -106,6 +106,7 @@ class ScanJob:
     report: Optional[Dict[str, Any]] = None
     log_buffer: List[str] = field(default_factory=list)
     task: Optional[asyncio.Task] = None
+    verdicts: Dict[str, str] = field(default_factory=dict)  # finding_key → "tp" | "fp"
 
 
 _jobs: Dict[str, ScanJob] = {}
@@ -114,6 +115,35 @@ _connections: Dict[str, List[Any]] = {}  # scan_id → list[WebSocket]
 
 def get_job(scan_id: str) -> Optional[ScanJob]:
     return _jobs.get(scan_id)
+
+
+def save_verdict(scan_id: str, key: str, verdict: Optional[str]) -> bool:
+    job = _jobs.get(scan_id)
+    if not job:
+        return False
+    if verdict:
+        job.verdicts[key] = verdict
+    else:
+        job.verdicts.pop(key, None)
+    # Rapor dosyası varsa verdicts alanını güncelle
+    report_path = str(Path(SCANS_DIR) / f"{scan_id}.json")
+    if os.path.exists(report_path):
+        try:
+            with open(report_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            data["verdicts"] = job.verdicts
+            with open(report_path, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+        except Exception as exc:
+            logger.warning("Verdict kaydedilemedi: %s", exc)
+    return True
+
+
+def get_verdicts(scan_id: str) -> Optional[Dict[str, str]]:
+    job = _jobs.get(scan_id)
+    if not job:
+        return None
+    return job.verdicts
 
 
 def list_jobs(limit: int = 20) -> List[ScanJob]:
@@ -294,6 +324,11 @@ async def _run_scan(
         try:
             with open(report_path, "r", encoding="utf-8") as f:
                 report = json.load(f)
+            # Tarama sırasında kaydedilen verdict'leri rapora ekle
+            if job.verdicts:
+                report["verdicts"] = job.verdicts
+                with open(report_path, "w", encoding="utf-8") as f:
+                    json.dump(report, f, ensure_ascii=False, indent=2)
             job.report = report
         except Exception as exc:
             logger.warning("Rapor okunamadı: %s", exc)
