@@ -46,7 +46,7 @@ OWASP Top 10 (2021) kategorilerini hedefleyen, yerel LLM (Ollama) ile zenginleş
                                  │ HTTP + WebSocket
                                  ▼
 ┌──────────────────────────────────────────────────────────────────┐
-│  nginx:alpine  (port 8090 → 80)                                  │
+│  nginx:alpine  (port 9000 → 80)                                  │
 │  • Statik dosya servisi    • WS upgrade (/ws/)                   │
 │  • API proxy (/api/)       • Sayfalar (/, /report/)              │
 └────────────────────────────────┬─────────────────────────────────┘

@@ -61,7 +61,9 @@ async function loadLLMModels() {
         <span style="color:var(--color-muted);font-size:11px">${humanSize(m.size)}</span>
       </label>
     `).join('');
+    hint.dataset.embedReady = data.embed_model_ready ? 'true' : 'false';
     hint.textContent = `${_availableModels.length} model bulundu. Embedding modeli: ${data.embed_model_ready ? '✓ hazır (RAG aktif olabilir)' : '✗ yok (nomic-embed-text önerilir)'}`;
+    checkLLMSpeedWarning();
   } catch (e) {
     list.innerHTML = `<div class="empty" style="grid-column:1/-1">Hata: ${e.message}</div>`;
   }
@@ -71,6 +73,26 @@ function updateLLMChip(idSlug) {
   const chip = document.getElementById(`llmchip-${idSlug}`);
   const cb = chip.querySelector('input');
   chip.classList.toggle('checked', cb.checked);
+  checkLLMSpeedWarning();
+}
+
+function checkLLMSpeedWarning() {
+  const hint = document.getElementById('llmModelHint');
+  if (!hint || !_availableModels.length) return;
+
+  const selectedNames = getSelectedLLMModels();
+  const selectedModels = _availableModels.filter(m => selectedNames.includes(m.name));
+  const slowModels = selectedModels.filter(m => m.size > 3 * 1024 * 1024 * 1024);
+  const fastModels = _availableModels.filter(m => m.size < 3 * 1024 * 1024 * 1024 && m.size > 0);
+
+  if (slowModels.length > 0) {
+    const names = slowModels.map(m => `${m.name} (${humanSize(m.size)})`).join(', ');
+    const suggestion = fastModels.length ? ` Daha hızlı öneri: <strong>${fastModels[0].name}</strong> (${humanSize(fastModels[0].size)})` : '';
+    hint.innerHTML = `<span style="color:#f59e0b">⚠ ${names} CPU'da yavaştır — her bulgu için 2-3 dk sürebilir.${suggestion}</span>`;
+  } else {
+    const embedReady = hint.dataset.embedReady === 'true';
+    hint.innerHTML = `${selectedModels.length} model seçili. Embedding modeli: ${embedReady ? '✓ hazır (RAG aktif olabilir)' : '✗ yok (nomic-embed-text önerilir)'}`;
+  }
 }
 
 function getSelectedLLMModels() {
@@ -168,14 +190,24 @@ async function loadQuickTargets() {
   }
 }
 
+function applyTargetModules(t) {
+  if (!t.modules || !t.modules.length) return;
+  selectAllModules(false);
+  t.modules.forEach(id => {
+    const cb = document.querySelector(`#chip-${id} input`);
+    if (cb) { cb.checked = true; updateChip(id); }
+  });
+}
+
 async function selectTarget(idx) {
   const t = _testTargets[idx];
   if (!t) return;
   document.getElementById('targetUrl').value = t.url;
+  document.getElementById('cookieInput').value = '';
+  applyTargetModules(t);
 
   if (t.name === 'DVWA') {
     setStatus('DVWA otomatik setup yapılıyor (DB kurulumu + login)...');
-    document.getElementById('cookieInput').value = '';
     try {
       const res = await fetch('/api/targets/dvwa/setup', { method: 'POST' });
       if (!res.ok) {
@@ -210,6 +242,16 @@ async function startScan() {
   const modules = getSelectedModules();
   if (!modules.length) { alert('En az bir modül seçiniz.'); return; }
 
+  const cookie = document.getElementById('cookieInput').value.trim();
+  if (target.includes('dvwa') && !cookie) {
+    const autoSetup = confirm(
+      'DVWA için oturum cookie\'si gerekli — cookie olmadan A01, A03, A07 modülleri 0 bulgu verir.\n\n' +
+      '"Tamam" seçerseniz DVWA otomatik kurulum yapılır ve cookie alınır.\n' +
+      '"İptal" seçerseniz cookie olmadan devam edersiniz.'
+    );
+    if (autoSetup) { selectTarget(0); return; }
+  }
+
   const llmEnabled = document.getElementById('llmToggle').checked;
   const selectedModels = llmEnabled ? getSelectedLLMModels() : [];
   if (llmEnabled && !selectedModels.length) {
@@ -239,6 +281,7 @@ async function startScan() {
     if (!res.ok) { alert('Tarama başlatılamadı.'); return; }
     const data = await res.json();
     connectWS(data.scan_id, modules);
+    loadHistory();
   } catch (e) {
     alert('Sunucuya bağlanılamadı: ' + e.message);
   }
@@ -287,6 +330,7 @@ function handleEvent(evt, modules) {
   switch (evt.type) {
     case 'scan_started':
       setStatus(`Tarama başladı → ${evt.target}`);
+      loadHistory();
       break;
 
     case 'module_begin':
@@ -304,13 +348,27 @@ function handleEvent(evt, modules) {
       appendLog(evt.message, evt.level);
       break;
 
+    case 'finding_enriched':
+      if (evt.finding) {
+        const list = document.getElementById('findingList');
+        if (list && list.querySelector('.empty')) list.innerHTML = '';
+        document.getElementById('findingsCard').style.display = 'block';
+        liveFindings.push(evt.finding);
+        document.getElementById('findingCount').textContent = `(${liveFindings.length})`;
+        if (list) list.appendChild(buildFindingCard(evt.finding, liveFindings.length - 1));
+      }
+      break;
+
     case 'scan_complete':
       setStatus(`Tamamlandı — ${evt.total_findings} bulgu (${evt.duration}s)`);
+      document.getElementById('cancelBtn').style.display = 'none';
+      document.getElementById('startBtn').disabled = false;
       markProgress(modules, null, 'done');
       if (evt.report) {
         window._lastReport = evt.report;
         window._lastScanId = evt.report_id;
-        if (evt.report.findings) renderFindings(evt.report.findings);
+        // Bulgular zaten akış ile geldiyse yeniden render etme
+        if (!liveFindings.length && evt.report.findings) renderFindings(evt.report.findings);
         showResultActions(evt.report_id);
       }
       loadHistory();
@@ -377,15 +435,55 @@ function renderFindings(findings) {
   findings.forEach((f, i) => list.appendChild(buildFindingCard(f, i)));
 }
 
+// ---------- False Positive Takibi ----------
+
+function findingKey(f) {
+  return [f.owasp_id, f.url || '', f.title || ''].join('||');
+}
+
+function getFPLabels() {
+  try { return JSON.parse(localStorage.getItem('owasp_fp_labels') || '{}'); } catch { return {}; }
+}
+
+function saveFPLabels(labels) {
+  try { localStorage.setItem('owasp_fp_labels', JSON.stringify(labels)); } catch {}
+}
+
+function markFinding(key, verdict) {
+  const labels = getFPLabels();
+  if (labels[key] === verdict) delete labels[key]; // aynı butona tekrar tıklanırsa sıfırla
+  else labels[key] = verdict;
+  saveFPLabels(labels);
+  document.querySelectorAll('.finding-card').forEach(card => {
+    if (card.dataset.fpKey === key) updateFPButtons(card, labels[key] || null);
+  });
+}
+
+function updateFPButtons(card, verdict) {
+  const tp = card.querySelector('.verdict-btn.tp');
+  const fp = card.querySelector('.verdict-btn.fp');
+  if (tp) tp.classList.toggle('active', verdict === 'tp');
+  if (fp) fp.classList.toggle('active', verdict === 'fp');
+}
+
+// ---------- Bulgu Kartı ----------
+
 function buildFindingCard(f, idx) {
   const card = document.createElement('div');
   card.className = 'finding-card';
+  const key = findingKey(f);
+  card.dataset.fpKey = key;
+  const verdict = getFPLabels()[key] || null;
   card.innerHTML = `
     <div class="finding-header" onclick="toggleCard(this)">
       <span class="owasp-id">${f.owasp_id}</span>
       <span class="title">${escHtml(f.title)}</span>
       <span class="badge badge-${f.severity}">${f.severity}</span>
       <span class="badge badge-${f.confidence}">${f.confidence}</span>
+      <span class="verdict-btns" onclick="event.stopPropagation()">
+        <button class="verdict-btn tp${verdict === 'tp' ? ' active' : ''}" onclick="markFinding(this.closest('.finding-card').dataset.fpKey,'tp')" title="Doğru Alarm">✓ Doğru</button>
+        <button class="verdict-btn fp${verdict === 'fp' ? ' active' : ''}" onclick="markFinding(this.closest('.finding-card').dataset.fpKey,'fp')" title="Yanlış Alarm">✗ Yanlış</button>
+      </span>
       <span class="chevron">▶</span>
     </div>
     <div class="finding-body">

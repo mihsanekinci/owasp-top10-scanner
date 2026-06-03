@@ -298,6 +298,8 @@ def enrich_findings(
                 analysis.get("risk_seviyesi", "?"),
             )
 
+        print(f"[FINDING_READY] {json.dumps(finding.to_dict(), ensure_ascii=False)}", flush=True)
+
 
 # ---------------------------------------------------------------------------
 # Rapor üretimi

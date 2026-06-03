@@ -91,7 +91,7 @@ _RE_MODULE_BEGIN = re.compile(r"Modül başlatılıyor[:\s]+([A-Z]\d{2})", re.IG
 _RE_MODULE_DONE = re.compile(
     r"Modül tamamlandı[:\s]+([A-Z]\d{2})[^\d]*(\d+)\s*bulgu", re.IGNORECASE
 )
-_RE_FINDING = re.compile(r"\[FINDING\]", re.IGNORECASE)
+_RE_FINDING_READY = re.compile(r"^\[FINDING_READY\]\s+(.+)$")
 
 
 @dataclass
@@ -312,6 +312,14 @@ async def _run_scan(
 
 
 def _parse_line(line: str) -> Dict[str, Any]:
+    m = _RE_FINDING_READY.match(line)
+    if m:
+        try:
+            finding = json.loads(m.group(1))
+            return {"type": "finding_enriched", "finding": finding}
+        except json.JSONDecodeError:
+            pass
+
     m = _RE_MODULE_BEGIN.search(line)
     if m:
         mod = m.group(1).upper()
